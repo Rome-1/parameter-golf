@@ -23,7 +23,7 @@ Do trained LM hidden states exhibit predictable low-rank or spectral structure? 
 
 ### 1.1 Neural Collapse
 
-**Papyan, Han & Donoho (2020).** "Prevalence of Neural Collapse during the Terminal Phase of Deep Learning Training." [arXiv:2006.05728](https://arxiv.org/abs/2006.05728)
+**Papyan, Han & Donoho (2020).** "Prevalence of Neural Collapse during the Terminal Phase of Deep Learning Training." PNAS 2020. [arXiv:2008.08186](https://arxiv.org/abs/2008.08186)
 
 **Key findings**: In the terminal phase of training (after training loss approaches zero), four interrelated phenomena emerge simultaneously:
 1. **NC1 (Variability Collapse)**: Within-class activations of the last-layer features converge to their class means.
@@ -72,13 +72,30 @@ Do trained LM hidden states exhibit predictable low-rank or spectral structure? 
 
 ### 1.4 Spectral Properties Specific to Transformers
 
-**Martin & Mahoney (2021).** "Implicit Self-Regularization in Deep Neural Networks: Evidence from Random Matrix Theory and Implications for Training." JMLR 2021. [arXiv:1810.01075](https://arxiv.org/abs/1810.01075)
+### 1.4 Anisotropy as Structural Property
+
+**Godey, Clergerie & Sagot (2024).** "Anisotropy Is Inherent to Self-Attention in Transformers." [arXiv:2401.12143](https://arxiv.org/abs/2401.12143)
+
+**Key findings**: Anisotropy in transformer representations is not merely a training artifact — it is a structural property of the self-attention mechanism itself. This holds across modalities (language, speech, vision), suggesting that isotropy-based regularization must account for the inherent anisotropy that attention produces.
+
+**Yan et al. (2022).** "Addressing Token Uniformity in Transformers via Singular Value Transformation." [arXiv:2208.11790](https://arxiv.org/abs/2208.11790)
+
+**Key findings**: Skewed singular value distributions of intermediate layer outputs characterize token uniformity problems. A less skewed distribution alleviates the problem. Proposes SVD-based transformation of layer outputs.
+
+**"Small Singular Values Matter: A Random Matrix Analysis of Transformer Models" (2024).** [arXiv:2410.17770](https://arxiv.org/abs/2410.17770)
+
+**Key findings**: Feature/activation matrices in transformers are often low rank, while weight matrices are not — the low-rank structure emerges in *representations*, not necessarily parameters. Regions of the spectrum deviating from Marchenko-Pastur predictions correspond to learned features. **Important implication**: measure spectral structure in activations, not just weights.
+
+### 1.5 Heavy-Tailed Self-Regularization
+
+**Martin & Mahoney (2019).** "Traditional and Heavy-Tailed Self Regularization in Neural Network Models." [arXiv:1901.08276](https://arxiv.org/abs/1901.08276)
 
 **Key findings**: The empirical spectral density (ESD) of weight matrices in well-trained DNNs follows a truncated power-law distribution, not a Marchenko-Pastur distribution (which would indicate random/untrained weights). The power-law exponent α correlates with generalization quality: well-trained models have α between 2 and 4 (heavy-tailed but not too heavy). This holds across architectures including transformers.
 
 **Applicability to pgolf**:
 - **Quality metric**: The power-law exponent of weight matrix spectra could serve as a *training quality indicator*. If the probe's converged weights show α ≈ 3, we could regularize toward this exponent during student training.
 - **Practical concern**: Fitting a power law to the ESD requires computing the full spectrum, which is expensive during training. But a coarse approximation (ratio of top-k to remaining singular values) might suffice.
+- **Tooling**: The `weightwatcher` Python package implements power-law fitting for weight matrix spectra — no need to write custom code.
 - **Speculation level**: MODERATE. The power-law relationship is well-established empirically, but using it as a *training target* is novel and untested. The computational cost of accurate spectral estimation during training may be prohibitive in a 10-minute budget.
 
 ---
@@ -164,9 +181,14 @@ What existing methods regularize representations toward specific geometric prope
 
 **Key findings**: Explicitly controlling the singular value spectrum of the output embedding matrix during training (spectrum control) alleviates representation degeneration. Penalizing the condition number (ratio of largest to smallest singular value) of the embedding matrix improves generation quality.
 
-**Applicability to pgolf**:
+**IMPORTANT CORRECTIVE — Rudman & Eickhoff (2024).** "Stable Anisotropic Regularization (I-STAR)." ICLR 2024. [arXiv:2305.19358](https://arxiv.org/abs/2305.19358)
+
+**Key findings**: Prior isotropy measures (average cosine similarity) are flawed. I-STAR proposes IsoScore*, a fully differentiable, numerically stable isotropy measure suitable for mini-batch training. Surprisingly, they find that **decreasing** isotropy (making representations more anisotropic) actually improves downstream performance across 3 LLMs and 9 tasks — contradicting Gao et al.'s prescription. The *right* anisotropy structure matters more than isotropy per se.
+
+**Combined applicability to pgolf**:
 - **Directly relevant**: pgolf models use tied embeddings with 1024 vocab / 512 dim. This is exactly the setting where representation degeneration occurs.
-- **Isotropy regularization as loss**: L_iso = ||Σ - σ_target · I||²_F where Σ is the covariance of hidden states. Push toward a target isotropy level extracted from the probe.
+- **Critical nuance from I-STAR**: Don't blindly push toward isotropy. Instead, regularize toward the *probe's observed anisotropy structure*. The probe tells us *how much* anisotropy is optimal.
+- **Isotropy regularization as loss**: L_iso = ||Σ - Σ_target||²_F where Σ is the covariance of hidden states and Σ_target is from the probe. NOT toward σ·I.
 - **Spectrum control on embeddings**: Penalize the condition number of the tied embedding matrix toward the probe's target condition number.
 - **Computational cost**: Computing the covariance requires accumulating X^T X over the batch. For d=512, this is a 512×512 matrix — cheap to compute and decompose. ~0.1ms per layer per step.
 - **Well-established**: This is one of the most actionable regularizers. **RECOMMEND FOR FIRST EXPERIMENTS.**
@@ -204,7 +226,22 @@ Results: All variants improve generalization on image classification, with SO be
 - **Caution**: Overly aggressive rank constraints may prevent the model from exploring high-rank intermediate representations that are necessary during early training before the low-rank structure emerges. The probe's rank profile is a *converged* property — the training path may need higher rank.
 - **Speculation level**: MODERATE. Low-rank structure is well-established in converged models, but whether constraining rank from initialization helps or hurts convergence speed is an open question.
 
-### 3.4 Spectral Regularizers Beyond Weight Decay
+### 3.4 Hyperspherical Uniformity and Neural Collapse Targets
+
+**Liu et al. (2021).** "Learning with Hyperspherical Uniformity." AISTATS 2021. [arXiv:2103.01649](https://arxiv.org/abs/2103.01649)
+
+**Key findings**: Proposes regularizing neurons/representations to be uniformly distributed on a unit hypersphere. Unlike L2 which regularizes individual neurons, this regularizes the *interaction* among neurons, reducing redundancy. Provides theoretical grounding via discrepancy measures on the sphere.
+
+**"Generalizing and Decoupling Neural Collapse via Hyperspherical Uniformity Gap" (2023).** [arXiv:2303.06484](https://arxiv.org/abs/2303.06484)
+
+**Key findings**: Extends neural collapse theory beyond the constraint that feature dim ≥ number of classes. Proposes the Hyperspherical Uniformity Gap (HUG) as an explicit training objective to drive representations toward the simplex ETF geometry. Differentiable and directly applicable.
+
+**Applicability to pgolf**:
+- HUG provides the clearest path from neural collapse theory to a practical loss: regularize the tied embedding toward simplex ETF geometry.
+- Hyperspherical uniformity is especially relevant for the output embedding with 1024 tokens in 512 dimensions (overcomplete regime where full ETF is impossible but projected ETF is useful).
+- Moderate computational cost (pairwise similarity computation, O(V²d) for vocab V and dim d). With V=1024, d=512: ~500M FLOPs per evaluation — do every 50 steps.
+
+### 3.5 Spectral Regularizers Beyond Weight Decay
 
 **Yoshida & Miyato (2017).** "Spectral Norm Regularization for Improving the Generalizability of Deep Learning." [arXiv:1705.10941](https://arxiv.org/abs/1705.10941)
 
@@ -214,9 +251,18 @@ Results: All variants improve generalization on image classification, with SO be
 
 **Key findings**: Constraining the Lipschitz constant of each layer (via spectral norm bounds) improves robustness and generalization. For transformers, this means constraining the spectral norm of attention and MLP weight matrices.
 
+**Miyato, Kataoka, Koyama & Yoshida (2018).** "Spectral Normalization for Generative Adversarial Networks." ICLR 2018. [arXiv:1802.05957](https://arxiv.org/abs/1802.05957)
+
+**Key findings**: Normalizes each weight matrix by dividing by its spectral norm, ensuring Lipschitz constant = 1 per layer. Computationally light (one power iteration per forward pass). Built into PyTorch as `torch.nn.utils.spectral_norm`. The most widely adopted spectral regularizer.
+
+**Scarvelis & Solomon (2024).** "Nuclear Norm Regularization for Deep Learning." NeurIPS 2024. [arXiv:2405.14544](https://arxiv.org/abs/2405.14544)
+
+**Key findings**: Penalizing the nuclear norm of a function's Jacobian encourages low-rank local behavior. Direct computation is intractable, but they prove an equivalence: for compositions f = g ∘ h, penalizing the average squared Frobenius norms of Jg and Jh is equivalent. Also propose a denoising-style approximation that avoids Jacobian computation entirely.
+
 **Applicability to pgolf**:
 - **Targeted spectral norm**: Instead of constraining σ_max ≤ 1 (a generic bound), constrain σ_max toward the probe's observed σ_max per weight matrix. This is a more informed constraint.
 - **Spectral shape penalty**: Beyond σ_max, penalize deviation from the entire singular value profile. L_spectral = Σ_i (σ_i(W) - σ_i^target)² for top-k singular values.
+- **Nuclear norm toward target**: ||W||_* ≈ target nuclear norm from probe. The Frobenius decomposition trick from Scarvelis makes this cheap.
 - **Computational cost**: Power iteration for σ_max is O(d²) — very cheap. Full SVD for the spectral profile is O(d³) — feasible but should be done periodically (every 50-100 steps), not every step.
 - **Speculation level**: LOW for spectral norm constraints (well-established); MODERATE for targeted spectral shape penalties (novel but mechanistically sound).
 
@@ -258,7 +304,17 @@ Only ~30% of heads are important; the rest are redundant. The important heads em
 
 **Key findings**: BERT's attention heads develop consistent patterns: some attend to the [CLS]/[SEP] tokens (delimiter heads), some attend to the previous/next token (local heads), and some attend broadly (global heads). These patterns are consistent across training runs and correlate with specific linguistic functions.
 
-### 4.2 Attention Pattern Convergence
+### 4.2 Induction Heads — A Universal Convergent Circuit
+
+**Olsson, Elhage, Nanda et al. (2022).** "In-context Learning and Induction Heads." Transformer Circuits Thread. [arXiv:2209.11895](https://arxiv.org/abs/2209.11895)
+
+**Key findings**: Induction heads — attention heads that implement pattern copying via a "previous token" head composed with a "match and copy" head — are a universal circuit that emerges across model sizes and architectures. They appear at a predictable phase transition during training and are mechanistically linked to in-context learning ability. Their emergence is **consistent across random seeds**, even in 2-layer models with a few million parameters.
+
+**Applicability to pgolf**:
+- **Strongest convergence result for attention**: Induction heads emerge reliably even in tiny models. Pre-initializing the attention weights to approximate the induction circuit could save significant training compute.
+- **Actionable**: The induction head circuit is well-characterized: one head attends to the previous token (positional), another attends to tokens that follow copies of the current token (pattern matching). These patterns can be initialized as attention biases.
+
+### 4.3 Attention Pattern Convergence
 
 **Raganato & Tiedemann (2018).** "An Analysis of Encoder Representations in Transformer-Based Machine Translation." EMNLP 2018.
 
@@ -285,7 +341,15 @@ Only ~30% of heads are important; the rest are redundant. The important heads em
 - **Compact encoding**: One slope value per head per layer. With 8 heads × 10 layers = 80 floats = 320 bytes. Trivially fits in the artifact.
 - **Speculation level**: LOW for the mechanism (ALiBi-like biases are well-established); MODERATE for the specific strategy of deriving them from a probe.
 
-### 4.4 Assessment for pgolf
+### 4.6 Adaptive Attention Span
+
+**Sukhbaatar, Grave, Lample, Jegou & Joulin (2019).** "Adaptive Attention Span in Transformers." ACL 2019. [arXiv:1905.07799](https://arxiv.org/abs/1905.07799)
+
+**Key findings**: Each attention head learns its own optimal attention span via a soft masking function with a single learned parameter per head. Early layers develop short spans (local), deeper layers longer spans. Adds essentially zero parameters.
+
+**Applicability to pgolf**: Initialize attention spans to the probe's learned distribution (short for early layers, long for later layers). Cost: 1 float per head = 80 bytes total.
+
+### 4.7 Assessment for pgolf
 
 Attention structure regularization is the **least promising** of the four research areas for pgolf, for two reasons:
 
@@ -348,6 +412,10 @@ All estimates for d=512, batch of B=8 sequences × 1024 tokens, per training ste
 **Passalis & Tefas (2018).** "Learning Deep Representations with Probabilistic Knowledge Transfer." ECCV 2018. [arXiv:1803.10837](https://arxiv.org/abs/1803.10837)
 
 **Key findings**: Probabilistic Knowledge Transfer (PKT) matches the *probability distributions* of teacher and student representations using KL divergence in a learned kernel space. This transfers geometric structure without requiring pointwise activation matching.
+
+**Saha et al. (2022).** "Distilling Representational Similarity using CKA." BMVC 2022.
+
+**Key findings**: Directly uses CKA as a loss function for representation distillation, computing cosine similarity between centered and normalized inter-example similarity matrices. The student beats or matches its teacher. Demonstrates that distilling the centered, normalized similarity distribution is more effective than distilling raw activations.
 
 **Applicability to pgolf** — the critical distinction:
 - Standard KD methods (FitNets, PKT) require the teacher to be present during training to produce activations on each training batch.
@@ -558,29 +626,40 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 3. Bansal, Chen & Wang (2018). "Can We Gain More from Orthogonality Regularizations in Training Deep Networks?" NeurIPS 2018. arXiv:1810.09102
 4. Clark, Khandelwal, Levy & Manning (2019). "What Does BERT Look At?" BlackboxNLP 2019. arXiv:1906.04341
 5. Gao, He, Tan & Qiu (2019). "Representation Degeneration Problem in Training Natural Language Generation Models." ICLR 2019. arXiv:1907.12009
-6. Gouk, Frank, Pfahringer & Cree (2021). "Regularisation of Neural Networks by Enforcing Lipschitz Continuity." Machine Learning 2021. arXiv:1804.04368
-7. Hsu, Bhojanapalli, Garg & Telgarsky (2022). "Language Model Compression with Weighted Low-Rank Factorization." ICLR 2022. arXiv:2207.00112
-8. Hu, Shen, Wallis, Allen-Zhu, Li, Wang, Wang & Chen (2022). "LoRA: Low-Rank Adaptation of Large Language Models." ICLR 2022. arXiv:2106.09685
-9. Huh, Cheung, Wang & Isola (2024). "The Platonic Representation Hypothesis." ICML 2024. arXiv:2405.07987
-10. Khodak, Balcan & Talwalkar (2021). "Initialization and Regularization of Factored Neural Layers." ICLR 2021. arXiv:2105.01029
-11. Kornblith, Norouzi, Lee & Hinton (2019). "Similarity of Neural Network Representations Revisited." ICML 2019. arXiv:1905.00414
-12. Lee, Song & Kim (2018). "Self-Knowledge Distillation via Dropout." arXiv:1811.01514
-13. Li, Hopkins, Bau & Viégas (2023). "Emergent World Representations." ICLR 2023. arXiv:2210.13382
-14. Martin & Mahoney (2021). "Implicit Self-Regularization in Deep Neural Networks." JMLR 2021. arXiv:1810.01075
-15. Mu & Viswanath (2018). "All-but-the-Top: Simple and Effective Postprocessing for Word Representations." ICLR 2018. arXiv:1702.01417
-16. Nanda, Chan, Lieberum, Smith & Steinhardt (2023). "Progress Measures for Grokking via Mechanistic Interpretability." ICLR 2023. arXiv:2301.05217
-17. Nguyen, Raghu & Kornblith (2021). "Do Wide Neural Networks Learn Representations?" NeurIPS 2021. arXiv:2010.15110
-18. Papyan, Han & Donoho (2020). "Prevalence of Neural Collapse." arXiv:2006.05728
-19. Park, Kim, Lu & Cho (2019). "Relational Knowledge Distillation." CVPR 2019. arXiv:1904.05068
-20. Passalis & Tefas (2018). "Learning Deep Representations with Probabilistic Knowledge Transfer." ECCV 2018. arXiv:1803.10837
-21. Press, Smith & Lewis (2022). "Train Short, Test Long: ALiBi." ICLR 2022. arXiv:2108.12409
-22. Romero, Ballas, Kahou, Chassang, Gatta & Bengio (2015). "FitNets: Hints for Thin Deep Nets." ICLR 2015. arXiv:1412.6550
-23. Sharma & Karakida (2024). "The Truth is in There: Layer-Selective Rank Reduction." ICLR 2024. arXiv:2312.13558
-24. Su, Lu, Pan, Murtadha, Wen & Liu (2024). "RoFormer: Enhanced Transformer with Rotary Position Embedding." Neurocomputing 2024. arXiv:2104.09864
-25. Tian, Krishnan & Isola (2020). "Contrastive Representation Distillation." ICLR 2020. arXiv:1910.10699
-26. Voita, Talbot, Moiseev, Sennrich & Titov (2019). "Analyzing Multi-Head Attention: Specialized Heads Do the Heavy Lifting." ACL 2019. arXiv:1905.09418
-27. Wang, Chen, Li & Xiang (2020). "Improving Neural Language Generation with Spectrum Control." ICLR 2020. arXiv:1906.02754
-28. Yang et al. (2022). "Inducing Neural Collapse in Deep Long-Tailed Learning."
-29. Yoshida & Miyato (2017). "Spectral Norm Regularization for Improving the Generalizability of Deep Learning." arXiv:1705.10941
-30. Zagoruyko & Komodakis (2017). "Paying More Attention to Attention." ICLR 2017. arXiv:1612.03928
-31. Zhong et al. (2023). "Understanding Collapse in Non-Contrastive Learning."
+6. Godey, Clergerie & Sagot (2024). "Anisotropy Is Inherent to Self-Attention in Transformers." arXiv:2401.12143
+7. Gouk, Frank, Pfahringer & Cree (2021). "Regularisation of Neural Networks by Enforcing Lipschitz Continuity." Machine Learning 2021. arXiv:1804.04368
+8. Hsu, Bhojanapalli, Garg & Telgarsky (2022). "Language Model Compression with Weighted Low-Rank Factorization." ICLR 2022. arXiv:2207.00112
+9. Hu, Shen, Wallis, Allen-Zhu, Li, Wang, Wang & Chen (2022). "LoRA: Low-Rank Adaptation of Large Language Models." ICLR 2022. arXiv:2106.09685
+10. Huh, Cheung, Wang & Isola (2024). "The Platonic Representation Hypothesis." ICML 2024. arXiv:2405.07987
+11. Khodak, Balcan & Talwalkar (2021). "Initialization and Regularization of Factored Neural Layers." ICLR 2021. arXiv:2105.01029
+12. Kornblith, Norouzi, Lee & Hinton (2019). "Similarity of Neural Network Representations Revisited." ICML 2019. arXiv:1905.00414
+13. Lee, Song & Kim (2018). "Self-Knowledge Distillation via Dropout." arXiv:1811.01514
+14. Li, Hopkins, Bau & Viégas (2023). "Emergent World Representations." ICLR 2023. arXiv:2210.13382
+15. Liu et al. (2021). "Learning with Hyperspherical Uniformity." AISTATS 2021. arXiv:2103.01649
+16. Martin & Mahoney (2019). "Traditional and Heavy-Tailed Self Regularization in Neural Network Models." arXiv:1901.08276
+17. Miyato, Kataoka, Koyama & Yoshida (2018). "Spectral Normalization for GANs." ICLR 2018. arXiv:1802.05957
+18. Mu & Viswanath (2018). "All-but-the-Top: Simple and Effective Postprocessing for Word Representations." ICLR 2018. arXiv:1702.01417
+19. Nanda, Chan, Lieberum, Smith & Steinhardt (2023). "Progress Measures for Grokking via Mechanistic Interpretability." ICLR 2023. arXiv:2301.05217
+20. Nguyen, Raghu & Kornblith (2021). "Do Wide Neural Networks Learn Representations?" NeurIPS 2021. arXiv:2010.15110
+21. Olsson, Elhage, Nanda et al. (2022). "In-context Learning and Induction Heads." arXiv:2209.11895
+22. Papyan, Han & Donoho (2020). "Prevalence of Neural Collapse." PNAS 2020. arXiv:2008.08186
+23. Park, Kim, Lu & Cho (2019). "Relational Knowledge Distillation." CVPR 2019. arXiv:1904.05068
+24. Passalis & Tefas (2018). "Learning Deep Representations with Probabilistic Knowledge Transfer." ECCV 2018. arXiv:1803.10837
+25. Press, Smith & Lewis (2022). "Train Short, Test Long: ALiBi." ICLR 2022. arXiv:2108.12409
+26. Romero, Ballas, Kahou, Chassang, Gatta & Bengio (2015). "FitNets: Hints for Thin Deep Nets." ICLR 2015. arXiv:1412.6550
+27. Rudman & Eickhoff (2024). "Stable Anisotropic Regularization (I-STAR)." ICLR 2024. arXiv:2305.19358
+28. Saha et al. (2022). "Distilling Representational Similarity using CKA." BMVC 2022.
+29. Scarvelis & Solomon (2024). "Nuclear Norm Regularization for Deep Learning." NeurIPS 2024. arXiv:2405.14544
+30. Sharma & Karakida (2024). "The Truth is in There: Layer-Selective Rank Reduction." ICLR 2024. arXiv:2312.13558
+31. "Small Singular Values Matter" (2024). arXiv:2410.17770
+32. Su, Lu, Pan, Murtadha, Wen & Liu (2024). "RoFormer: Enhanced Transformer with Rotary Position Embedding." Neurocomputing 2024. arXiv:2104.09864
+33. Sukhbaatar, Grave, Lample, Jegou & Joulin (2019). "Adaptive Attention Span in Transformers." ACL 2019. arXiv:1905.07799
+34. Tian, Krishnan & Isola (2020). "Contrastive Representation Distillation." ICLR 2020. arXiv:1910.10699
+35. Voita, Talbot, Moiseev, Sennrich & Titov (2019). "Analyzing Multi-Head Attention: Specialized Heads Do the Heavy Lifting." ACL 2019. arXiv:1905.09418
+36. Wang, Chen, Li & Xiang (2020). "Improving Neural Language Generation with Spectrum Control." ICLR 2020. arXiv:1906.02754
+37. Yan et al. (2022). "Addressing Token Uniformity in Transformers via Singular Value Transformation." arXiv:2208.11790
+38. Yang et al. (2022). "Inducing Neural Collapse in Deep Long-Tailed Learning."
+39. Yoshida & Miyato (2017). "Spectral Norm Regularization for Improving the Generalizability of Deep Learning." arXiv:1705.10941
+40. Zagoruyko & Komodakis (2017). "Paying More Attention to Attention." ICLR 2017. arXiv:1612.03928
+41. Zhong et al. (2023). "Understanding Collapse in Non-Contrastive Learning."
+42. "Generalizing and Decoupling Neural Collapse via Hyperspherical Uniformity Gap" (2023). arXiv:2303.06484
