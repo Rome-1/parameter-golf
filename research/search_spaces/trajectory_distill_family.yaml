@@ -1,0 +1,189 @@
+# Trajectory / Temporal Distillation Search Family
+#
+# Strategy: Overtrain a teacher model beyond the 10-min budget, capture its
+# latent-space features, then build auxiliary losses so a student model trained
+# within budget recreates those internal structures.
+#
+# Two-phase approach:
+#   Phase 1 (offline): Train teacher for 30-60 min, save checkpoints + hidden states
+#   Phase 2 (within budget): Train student with auxiliary distillation losses
+
+family: trajectory_distillation
+description: >
+  Temporal distillation from an overtrained teacher. The teacher's value comes
+  from its richer learned representations (latent space structure), not from
+  compressing its weights directly. Auxiliary losses encourage the student to
+  develop similar internal representations within the 10-minute training budget.
+
+# ─── Phase 1: Teacher Overtraining ───────────────────────────────────────────
+
+teacher:
+  # Teacher uses the same architecture as the baseline but trains much longer.
+  base_config: baseline  # 9L 512dim 1024vocab
+  overtraining_factor: [3, 6]  # multiples of the 10-min budget
+  max_wallclock_seconds: [1800, 3600]  # 30 or 60 minutes
+  iterations: [60000, 120000]  # proportional to overtraining factor
+
+  # Checkpoint trajectory: save N checkpoints evenly spaced over training
+  checkpoint_strategy:
+    num_checkpoints: [5, 10, 20]
+    save_hidden_states: true  # cache per-layer hidden states on a data subset
+    hidden_state_subset_tokens: 1_048_576  # 1M tokens for caching (~2 batches)
+
+  # Optional: larger teacher architecture (more capacity to distill from)
+  teacher_scale_variants:
+    - name: same_arch
+      num_layers: 9
+      model_dim: 512
+    - name: wider
+      num_layers: 9
+      model_dim: 768
+    - name: deeper
+      num_layers: 14
+      model_dim: 512
+
+# ─── Phase 2: Student Distillation (Within Budget) ──────────────────────────
+
+student:
+  # Student architecture matches the baseline (must fit in 16MB artifact)
+  num_layers: [9, 11]
+  model_dim: 512
+  max_wallclock_seconds: 600  # 10-minute hard cap
+
+  # ─── Distillation Loss Components ───────────────────────────────────────
+
+  losses:
+    # 1. Standard cross-entropy on ground-truth labels (always present)
+    cross_entropy:
+      weight: 1.0
+
+    # 2. Soft-target KD on logits (Hinton et al. 2015)
+    logit_kd:
+      enabled: [true, false]
+      weight: [0.1, 0.5, 1.0]
+      temperature: [2.0, 4.0, 8.0]
+      divergence: [forward_kl, reverse_kl, skew_kl]  # MiniLLM/DistiLLM variants
+      skew_alpha: [0.1, 0.5, 0.9]  # only for skew_kl
+
+    # 3. Hidden-state matching (FitNets / TinyBERT style)
+    hidden_matching:
+      enabled: [true, false]
+      weight: [0.01, 0.1, 0.5]
+      loss_type: [mse, cosine]
+      layer_mapping: [skip, last, all]
+      # skip: match every k-th teacher layer to student layers (PKD-Skip)
+      # last: match last k teacher layers to last k student layers (PKD-Last)
+      # all: match all layers with linear interpolation mapping
+      use_projector: true  # learned linear projector for dim mismatch
+      projector_dim: null  # null = match teacher dim; set if teacher is wider
+
+    # 4. Attention distribution matching (Zagoruyko 2017 / TinyBERT)
+    attention_matching:
+      enabled: [true, false]
+      weight: [0.01, 0.1]
+      loss_type: [mse, kl]  # MSE on attention maps or KL on distributions
+      layer_mapping: [skip, last]
+
+    # 5. CKA structural alignment (Kornblith 2019 / Park 2023)
+    cka_alignment:
+      enabled: [true, false]
+      weight: [0.01, 0.1, 0.5]
+      kernel: [linear, rbf]
+      level: [intra, local_inter, global_inter, all]  # Park et al. tri-level
+
+    # 6. Contrastive representation distillation (Tian et al. 2020)
+    crd:
+      enabled: [true, false]
+      weight: [0.01, 0.1]
+      projection_dim: [64, 128]
+      temperature: [0.07, 0.1]
+      num_negatives: [1024, 4096]
+
+  # ─── Checkpoint Scheduling ─────────────────────────────────────────────
+
+  checkpoint_schedule:
+    # Which teacher checkpoint to distill from at each stage of student training
+    strategy: [fixed_final, linear_progression, curriculum]
+    # fixed_final: always use final teacher checkpoint
+    # linear_progression: match student progress to teacher trajectory
+    # curriculum: start with early teacher checkpoints, progress to final
+
+  # ─── Task-Aware Filtering (Liang et al. 2023 TED) ─────────────────────
+
+  task_filtering:
+    enabled: [true, false]
+    filter_type: [attention_gate, learned_mask]
+    # Filters which teacher representations to match, preventing the
+    # under-capacity student from wasting budget on irrelevant features
+
+# ─── Experiment Configurations ───────────────────────────────────────────────
+
+experiments:
+  # Minimal viable experiment: just logit KD from overtrained teacher
+  baseline_kd:
+    teacher:
+      overtraining_factor: 3
+      teacher_scale_variants: same_arch
+    student:
+      num_layers: 9
+      losses:
+        cross_entropy: { weight: 1.0 }
+        logit_kd: { enabled: true, weight: 0.5, temperature: 4.0, divergence: forward_kl }
+        hidden_matching: { enabled: false }
+        attention_matching: { enabled: false }
+        cka_alignment: { enabled: false }
+        crd: { enabled: false }
+      checkpoint_schedule: { strategy: fixed_final }
+      task_filtering: { enabled: false }
+
+  # Full multi-component distillation
+  full_trajectory:
+    teacher:
+      overtraining_factor: 6
+      teacher_scale_variants: same_arch
+      checkpoint_strategy: { num_checkpoints: 10, save_hidden_states: true }
+    student:
+      num_layers: 11
+      losses:
+        cross_entropy: { weight: 1.0 }
+        logit_kd: { enabled: true, weight: 0.5, temperature: 4.0, divergence: reverse_kl }
+        hidden_matching: { enabled: true, weight: 0.1, loss_type: cosine, layer_mapping: skip }
+        attention_matching: { enabled: true, weight: 0.01, loss_type: mse }
+        cka_alignment: { enabled: true, weight: 0.1, kernel: linear, level: all }
+        crd: { enabled: false }
+      checkpoint_schedule: { strategy: linear_progression }
+      task_filtering: { enabled: true, filter_type: attention_gate }
+
+  # CKA-only: lightweight structural alignment
+  structural_only:
+    teacher:
+      overtraining_factor: 3
+      teacher_scale_variants: same_arch
+    student:
+      num_layers: 9
+      losses:
+        cross_entropy: { weight: 1.0 }
+        logit_kd: { enabled: false }
+        hidden_matching: { enabled: false }
+        attention_matching: { enabled: false }
+        cka_alignment: { enabled: true, weight: 0.5, kernel: linear, level: intra }
+        crd: { enabled: false }
+      checkpoint_schedule: { strategy: fixed_final }
+      task_filtering: { enabled: false }
+
+  # Reverse KLD + hidden matching (MiniLLM-inspired)
+  reverse_kd_hidden:
+    teacher:
+      overtraining_factor: 6
+      teacher_scale_variants: wider
+    student:
+      num_layers: 11
+      losses:
+        cross_entropy: { weight: 1.0 }
+        logit_kd: { enabled: true, weight: 1.0, temperature: 2.0, divergence: reverse_kl }
+        hidden_matching: { enabled: true, weight: 0.1, loss_type: mse, layer_mapping: all, use_projector: true }
+        attention_matching: { enabled: false }
+        cka_alignment: { enabled: false }
+        crd: { enabled: false }
+      checkpoint_schedule: { strategy: curriculum }
+      task_filtering: { enabled: true, filter_type: learned_mask }
